@@ -13,9 +13,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.PackageManager
-import android.graphics.Canvas
-import android.graphics.Rect
-import android.graphics.RectF
+import android.graphics.*
 import android.os.Build
 import android.util.AttributeSet
 import android.util.Size
@@ -24,6 +22,7 @@ import android.widget.Toast
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.toRectF
 import androidx.lifecycle.LifecycleOwner
 import com.google.mlkit.common.model.LocalModel
 import com.google.mlkit.vision.common.InputImage
@@ -41,15 +40,15 @@ import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
     private var cameraSelector: CameraSelector? = null
-    private var previewView: PreviewView? = null
+    private lateinit var previewView: PreviewView
     private var previewUseCase: Preview? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private lateinit var cameraExecutor: ExecutorService
     private var graphicOverlay: GraphicOverlay? = null
-    private var testOverlay: TestView1? = null
-    private var canvas = Canvas()
+    private lateinit var testOverlay: TestView1
     private var textOverlay: TextView? = null
     private lateinit var noString: String
+    private lateinit var boundBoxView: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.previewView)
         //graphicOverlay = findViewById(R.id.graphicOverlayView)
+        testOverlay = findViewById(R.id.testView)
         textOverlay = findViewById(R.id.resultTextView)
         noString = getString(R.string.nothing)
 
@@ -78,13 +78,24 @@ class MainActivity : AppCompatActivity() {
             val preview = Preview.Builder()
                 .build()
                 .also {
-                    it.setSurfaceProvider(previewView?.surfaceProvider)
+                    it.setSurfaceProvider(previewView.surfaceProvider)
                 }
 
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setTargetResolution(Size(1280, 720))
-                .build().apply { setAnalyzer(Executors.newSingleThreadExecutor(), TestAnalyzer(textOverlay, canvas, noString)) }
+                .build().apply {
+                    setAnalyzer(
+                        Executors.newSingleThreadExecutor(),
+                        TestAnalyzer(
+                            textOverlay,
+                            noString,
+                            testOverlay,
+                            previewView.height.toFloat(),
+                            previewView.width.toFloat()
+                        )
+                    )
+                }
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
@@ -125,7 +136,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Once complete, move to analyzer file
-    private class TestAnalyzer(private var graphicOverlay: TextView?, private var canvas: Canvas, private var noString: String) : ImageAnalysis.Analyzer {
+    private class TestAnalyzer(
+        private var graphicOverlay: TextView?,
+        private var noString: String,
+        private var testOverlay: TestView1,
+        private var viewHeight: Float,
+        private var viewWidth: Float) : ImageAnalysis.Analyzer {
+
         private val localModel = LocalModel.Builder()
             .setAssetFilePath("custom_models/object_labeler.tflite")
             .build()
@@ -137,12 +154,32 @@ class MainActivity : AppCompatActivity() {
             .build()
         private val objectDetector = ObjectDetection.getClient(customObjectDetectorOptions)
 
+        private val paint = Paint().apply {
+            style = Paint.Style.STROKE
+            color = Color.RED
+            strokeWidth = 6f
+        }
+        private var _scaleY = 0f
+        private var _scaleX = 0f
 
-        @SuppressLint("UnsafeOptInUsageError")
+        private fun translateX(x: Float): Float = x * _scaleX
+        private fun translateY(y: Float): Float = y * _scaleY
+
+        private fun translateRect(rect: Rect) = RectF(
+            translateX(rect.left.toFloat()),
+            translateY(rect.top.toFloat()),
+            translateX(rect.right.toFloat()),
+            translateY(rect.bottom.toFloat())
+        )
+
+        @SuppressLint("UnsafeOptInUsageError", "SetTextI18n")
         override fun analyze(imageProxy: ImageProxy) {
             val mediaImage = imageProxy.image
             if (mediaImage != null) {
                 val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                _scaleY = viewHeight / image.width.toFloat()
+                _scaleX = viewWidth / image.height.toFloat()
+
                 objectDetector
                     .process(image)
                     .addOnFailureListener { e ->
@@ -153,8 +190,12 @@ class MainActivity : AppCompatActivity() {
                         for (detectedObject in results) {
                             if (detectedObject.labels.size >= 1) {
                                 graphicOverlay?.text = detectedObject.labels.first().text
+                                testOverlay.setRectBounds(translateRect(detectedObject.boundingBox))
+                                testOverlay.invalidate()
                             } else {
                                 graphicOverlay?.text = noString
+                                testOverlay.setRectBounds(RectF(0f, 0f, 0f, 0f))
+                                testOverlay.invalidate()
                             }
                         }
                     }
@@ -166,3 +207,5 @@ class MainActivity : AppCompatActivity() {
         }
     }
 }
+
+data class DetectionResult(val boundingBox: RectF, val text: String)
